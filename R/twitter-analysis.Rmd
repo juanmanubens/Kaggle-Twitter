@@ -1,0 +1,820 @@
+---
+title: "Gender Classification from Tweets"
+author: "Juan Manubens, Quentin Chalvondemersay"
+graphics: yes
+date: 'April 30, 2017'
+output:
+  pdf_document:
+    toc: no
+    toc_depth: 2
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    toc: no
+
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyfoot[CO,CE]{}
+- \fancyfoot[LE,RO]{\thepage}
+fontsize: 11pt
+tables: yes
+---
+
+```{r setup, include=FALSE}
+library(knitr); library(leaps); library(ggplot2); library(dplyr); library(glmnet); library(ineq) ; library(corrplot); library('splines'); library("randomForest"); library("chron");library(tree); library(pROC); library(MASS); library(car); library("ResourceSelection"); library("gridExtra"); library("bestglm"); library("logisticPCA"); library("rARPACK"); library("psych"); library("nFactors");library(e1071); library("sampling"); library("data.table"); library("nnet");library("neuralnet");library("dismo");library("rpart"); library("ROCR"); library(readxl); library('latex2exp'); library(WriteXLS); library(gridExtra); library("stats");library(readr); library(caret)
+
+knitr::opts_chunk$set(tidy=TRUE, fig.width=6,  fig.height=5, fig.align='left', dev = 'pdf')
+opts_knit$set(root.dir = "/Users/Juan//Dropbox/000SeniorSpring/STAT 471/Data")
+```
+
+
+
+```{r, results='hide', echo=F}
+# Custom Functions
+wnan <-function(X){(which(is.nan(X)))}
+wna <-function(X){(which(is.na(X)))}
+len  <- function(i){length(i)}
+lapply.unum <- function(X,Fx){lapply(X,Fx) %>% unlist %>%  as.numeric }
+lapply.uvec <- function(X,Fx){lapply(X,Fx) %>% unlist %>%  as.vector }
+unum <- function(X){X %>% unlist %>% as.numeric}
+p0lm <- function(X){paste0(X, collapse = " + " )}
+```
+
+# Executive Summary
+
+This study attempts to predict user gender from two types of predictors reflecting two different sets of attributes: profile characteristics (12 variables) and language usage patterns (244 word-presence binary variables, representing words that appeared in at least 100 of the tweets of the cleaned sample). After cleaning the data set to remove all accounts that were suspected to be fake (bot accounts), we tested 3 different models: (1) Logistic Regression with variables selected through Elastic Net (2) Random Forest with all variables (3) Random Forest with Elastic Net Variables. All models performed reasonably well, but the best performance came from the Random Forest model, with 70.5% and 70.6% accuracy for the 75-cap and 50-cap sets, respectively. This model considered 22 randomly selected variables to be available for splitting at each tree node, as set by the parameter *mtry*. We set *ntree*, the number of trees to grow, at 1000. The results of our study not only provide strong support for our initial view on the presence of language use differences between genders on Twitter but also corroborate the conclusions of existing studies that link gender and social media activity. 
+
+# Goal of the Study
+
+The ultimate goal of this study is to develop a statistically significant model that can accurately predict user gender based on exhibited Twitter data. Accomplishing this goal involves cleaning the raw data, identifying the variables that are most relevant in predicting gender, and fitting appropriate classification models. This study is especially relevant in today’s world as digital presence and social networking activities online are deeply integrated into most people’s lives in the 21st century. Given the sheer volume of activities and traffic on leading social networking platforms such as Facebook and Twitter, we believe that there are valuable insights to be unlocked by analyzing the big data made available through such platforms.
+
+## Literary Review
+
+There is precedent of studies exploring different text mining techniques, data cleaning procedures, featurization methodologies and classification models aiming to analyze differences between different populations of people. A good example is Schwartz et al. (2013), who analyzed 700 million words gathered from Facebook messages to identify similarities and differences in language use among different groups of participants [1]. Another study conducted by Coviello et al. (2014) even found suggestive evidence that online social networks such as Facebook contribute to “global emotional synchrony” as emotions spread through such online platforms [2]. As such, user data generated on various online social media services can be used to identify insightful user characteristics. 
+
+In this study, we focus on identifying user gender. While the topic of gender identification through social media activity data has not been covered extensively in existing literature, the most predominant literature in this domain is arguably a study by Kosinski et al. (2012). He conducted a statistical study using Facebook likes to show that sensitive user information, including not only gender but also sexual orientation, can be identified with high accuracy [3]. 
+
+Our study analyzes relatively more granular data including Twitter profile characteristics and language usage patterns in individual tweets.  Our preliminary expectation was that using this combination of features would allow us to accurately predict user gender with at least 60% accuracy. 
+
+
+# Data  
+
+```{r, results='hide', echo=F}
+load(file="tweet471.RData")
+#clean_twitter <- read_csv("vectorizerdata.csv") 
+#clean_twitter %>% colnames
+noncovariates <- c(1,2)
+clean_twitter[[12]]  <- clean_twitter[[12]] %>% as.factor # 17 levels
+clean_twitter[[13]]  <- clean_twitter[[13]] %>% as.factor # 17 levels
+
+# Create index for alternate set with tweets capped at 50 per day
+over50 <- which(clean_twitter$tweets_per_day > 50)  #%>% len  # 1327
+
+# Prediction output
+clean_twitter$Yhat<- (clean_twitter$gender == (clean_twitter$gender %>% unique)[2] ) %>% as.numeric # M = 0, F = 1
+
+# Prepare sets for modeling
+clean_twitter.75 <- clean_twitter[,-noncovariates]
+clean_twitter.50 <- clean_twitter[-over50,-noncovariates]
+
+# Matrixes for Elastic Net
+X.75 <- as.matrix( model.matrix(Yhat ~., clean_twitter.75)[,-1] )
+Y.75 <-  as.matrix( clean_twitter.75[, 256] )
+
+X.50 <- as.matrix( model.matrix(Yhat ~., clean_twitter.50)[,-1] )
+Y.50 <-  as.matrix( clean_twitter.50[, 256] )
+```
+
+The original Twitter data analyzed in this study comes from Kaggle, an open-source web platform for data analytics. The dataset is comprised of approximately 20,000 observations (Twitter profiles) along 26 features [3]. According to Kaggle posting, the original 26 variables are described as follows: 
+
+1)	**unit_id**: A unique ID for user
+2)	**golden**: Whether the user was included in the gold standard for the model; TRUE or FALSE
+3)	**unit_state**: State of the observation; one of finalized (for contributor-judged) or golden (for gold standard observations)
+4)	**trusted_judgments**: Number of trusted judgments (int); always 3 for non-golden, and what may be a unique ID for gold standard observations
+5)	**last_judgment_at**: Date and time of last contributor judgment; blank for gold standard observations
+6)	**gender**: One of male, female, or brand (for non-human profiles)
+7)	**gender:confidence**: A float representing confidence in the provided gender
+8)	**profile_yn**: "no" here seems to mean that the profile was meant to be part of the dataset but was not available when contributors went to judge it
+9)	**profile_yn:confidence**: Confidence in the existence/non-existence of the profile
+10)	**created**: Date and time when the profile was created
+11)	**description**: The user's profile description
+12)	**fav_number**: Number of tweets the user has favorited
+13)	**gender_gold**: If the profile is golden, what is the gender?
+14)	**link_color**: The link color on the profile, as a hex value
+15)	**name**: The user's name
+16)	**profile_yn_gold**: Whether the profile y/n value is golden
+17)	**profileimage**: A link to the profile image
+18)	**retweet_count**: Number of times the user has retweeted (or possibly, been retweeted)
+19)	**sidebar_color**: Color of the profile sidebar, as a hex value
+20)	**text**: Text of a random one of the user's tweets
+21)	**tweet_coord**: If the user has location turned on, the coordinates as a string with the format "[latitude, longitude]"
+22)	**tweet_count**: Number of tweets that the user has posted
+23)	**tweet_created**: When the random tweet (in the text column) was created
+24)	**tweet_id**: The tweet ID of the random tweet
+25)	**tweet_location**: Location of the tweet; seems to not be particularly normalized
+26)	**user_timezone**: The timezone of the user
+
+## Data Pre-processing
+
+Although the dataset provides a breadth of potentially useful data, it required some basic cleaning in order to be usable in the statistical analysis process. Our current version of R Studio did not support the packages we needed for this phase, so we decided to use Python for this phase. All the code can be found in the bottom of the R Markdown file, and attached in the project zip file.
+
+To begin, we extracted the relevant data for only human observations as the dataset originally includes non-human profiles related to brands. Additionally, several feature columns were eliminated early on as they do not add meaningful value to the analysis process (e.g. unique identifiers); these included variables such as **unit_id**, **golden**, **unit_state**, **trusted_judgments**, **last_judgment_at**, **profile_yn**, **gender_gold**, and **profileimage**. 
+
+We decided to eliminated several questionable observations based on **gender:confidence**, **profile_yn:confidence**, and the number of tweets per day as we deemed them to be invalid observations likely generated by automated bots. For the purposes of this study, we considered two subset data with tweets per day capped at 50 and 75.  
+
+### Featurization
+
+We decided that the most reasonable approach was to consider two types of predictors reflecting two different sets of attributes: profile characteristics (12 variables) and language usage patterns (244 word-presence binary variables, representing words that appeared in at least 100 of the tweets of the cleaned sample). To illustrate a few of these: 
+
+1)	**has_mention**: When tweeting, a person has the option of tagging another user in the tweet. This is done by writing '@' and  the other user's twitter name without any spaces. A twitter name can be a maximum of 15 characters so we will look for ocurrences of '@' followed by a max of 15 characters. To avoid counting ocurrences that fulfill these requirements  but are not mentions, we note that twitter handles only allow alphanumeric characters and underscores. 
+2)	**days_active**: days since the account was created until the tweet was created
+3)	**has_hashtags**: indicates whether or not there are hashtags in the tweet
+
+\pagebreak
+
+# Findings 
+
+```{r, fig.align='center', fig.width=10 , echo=F }
+results.RF.plot
+```
+
+
+
+```{r, results='hide', echo=F}
+finalreport.df <- data.frame(elasticlogit=rep(0,2),randomforest=rep(0,2),elasticrandomforest=rep(0,2))
+finalreport.df$elasticlogit <- results.elasticlogit[500,c(2,3)] %>% unlist
+finalreport.df$randomforest <- results.RF[500,c(2,3)] %>% unlist
+finalreport.df$elasticrandomforest <- results.RFelastic[500,c(2,3)] %>% unlist
+rownames(finalreport.df) <- c("Cap at 75", "Cap at 50")
+colnames(finalreport.df) <- c("Elastic Net Logit","Random Forest","Random Forest - Elastic Net")
+```
+
+```{r,  echo=F, message=F, results='asis'}
+library(xtable)
+t1 <- xtable(finalreport.df, caption = "Model Results", digits=c(0,3,3,3))
+print.xtable(t1, type="latex", comment = getOption("xtable.comment",FALSE))
+```
+
+All models performed reasonably well, but the best performance came from the Random Forest model, with 70.5% and 70.6% accuracy for the 75-cap and 50-cap sets, respectively. This model considered 22 randomly selected variables to be available for splitting at each tree node, as set by the parameter *mtry*. We set *ntree*, the number of trees to grow, at 1000.
+
+
+# Detailed Analysis
+
+Using the cleaned dataset, we approached the statistical modeling process in two ways: logistic regression and random forest.  
+
+
+## Model 1: Elastic Net Logistic Regression
+### Variable Regularization
+
+```{r, include=F,eval=F, echo=F}
+#set.seed(323)  
+#fit.elastic.cv.75 <- cv.glmnet(X.75, Y.75, alpha=.99, family="binomial", nfolds = 10, type.measure = "deviance") 
+#fit.elastic.cv.50 <- cv.glmnet(X.50, Y.50, alpha=.99, family="binomial", nfolds = 10, type.measure = "deviance") #
+#fit.elastic.75.1se <- glmnet(X.75, Y.75, alpha=.90, family="binomial", lambda=fit.elastic.cv.75$lambda.1se)
+#fit.elastic.50.1se <- glmnet(X.50, Y.50, alpha=.90, family="binomial", lambda=fit.elastic.cv.50$lambda.1se)
+#fit.elastic.75.1se.beta <- coef(fit.elastic.75.1se)
+#fit.elastic.50.1se.beta <- coef(fit.elastic.50.1se)
+#beta.elastic.75 <- fit.elastic.75.1se.beta[which(fit.elastic.75.1se.beta !=0),]
+#beta.elastic.50 <- fit.elastic.50.1se.beta[which(fit.elastic.50.1se.beta !=0),]
+#beta.elastic.75 <- as.matrix(beta.elastic.75)
+#beta.elastic.50 <- as.matrix(beta.elastic.50)
+
+
+#set.seed(323) 
+#fit.elastic.cv.75 <- cv.glmnet(X.75, Y.75, alpha=.99, family="binomial", nfolds = 10, type.measure = "deviance") 
+#fit.elastic.75.1se <- glmnet(X.75, Y.75, alpha=.90, family="binomial", lambda=fit.elastic.cv.75$lambda.1se)
+#fit.elastic.75.1se.beta <- coef(fit.elastic.75.1se)
+#beta.elastic.75 <- fit.elastic.75.1se.beta[which(fit.elastic.75.1se.beta !=0),]
+#beta.elastic.75 <- as.matrix(beta.elastic.75)
+
+```
+
+```{r, results='hide', echo=F}
+rownames(beta.elastic.75) %>% len # 122
+rownames(beta.elastic.75)[2:40] %>% p0lm #40:86
+rownames(beta.elastic.75)[40:80] %>% p0lm #
+rownames(beta.elastic.75)[80:122] %>% p0lm #
+# has_mention + days_active + favorites_per_day + retweets_per_day + description_nchars + text_nchars + name_nchars + link_color_name + sidebar_color_name + amazing + amp + ass + back + beautiful + big + blogger + books + business + coffee + com + dad + day + days + director + editor + fan + father + favorite + find + food + football + free + friend + friends + fuck + fucking + game + games + girl + girls + give + gmail + guy + hair + happy + hard + having + health + heart + help + home + https + husband + im + just + keep + life + like + little + living + lol + love + lover + makes + making + man + man + media + mind + miss + mom + money + music + need + old + onedirection + person + photographer + play + professional + put + re + right + say + shit + song + sports + stop + student + stuff + take + team + thank + things + think + today + travel + try + tv + tweet + twitter + ve + views + wanna + want + wife + wish + working + youtube 
+
+rownames(beta.elastic.50) %>% len #124
+rownames(beta.elastic.50)[2:40] %>% p0lm 
+rownames(beta.elastic.50)[40:80] %>% p0lm #
+rownames(beta.elastic.50)[80:124] %>% p0lm #
+# has_mention + days_active + favorites_per_day + retweets_per_day + description_nchars + text_nchars + name_nchars + link_color_name + sidebar_color_name + amazing + amp + back + bad + beautiful + believe + big + black + blogger + books + care + coffee + dad + day + days + digital + director + editor + fan + father + favorite + find + food + football + free + friend + friends + fuck + fucking + game + games + girl + girls + guy + hair + happy + having + health + heart + help + hi + home + https + husband + im + just + keep + life + like + little + living + lol + love + lover + makes + man + media + mind + miss + mom + money + music + need + night + old + onedirection + person + photographer + play + pretty + put + re + right + shit + song + sports + stay + student + stuff + take + team + thank + things + think + today + travel + try + tv + tweet + twitter + ve + views + wanna + want + went + wife + wish + working + year + youtube
+```
+
+First, the construction of the logistic regression model began with the selection of important variables using elastic net. As previously noted, we applied the modeling process to two subsets of data (tweets per day capped at 50 and 75) to examine the presence of any noteworthy differences. Using an alpha value of 0.99, cross-validation k-fold value of 10, and lambda value of **lambda.1se**, the elastic net variable selection process identified 124 variables for the dataset with tweets per day capped at 50 and 122 variables for the dataset with tweets per day capped at 75. We believe that the use of lambda.1se as the lambda value for the elastic net variable selection process is appropriate as it essentially yields the most parsimony without compromising analytical accuracy. 
+
+### Logistic Regression Fit with `beta.elastic` Output
+
+Once the relevant variables had been identified, we ran binomial logistic regressions with the selected variables and generated ROC plots for performance comparison (green curve for tweets capped at 50 per day; blue curve for tweets capped at 75 per day).  
+
+```{r, results='hide', echo=F}
+#fit.elastic.75 <- glm(Yhat ~ has_mention + days_active + favorites_per_day + retweets_per_day + description_nchars + text_nchars + name_nchars + link_color_name + sidebar_color_name + amazing + amp + ass + back + beautiful + big + blogger + books + business + coffee + com + dad + day + days + director + editor + fan + father + favorite + find + food + football + free + friend + friends + fuck + fucking + game + games + girl + girls + give + gmail + guy + hair + happy + hard + having + health + heart + help + home + https + husband + im + just + keep + life + like + little + living + lol + love + lover + makes + making + man + man + media + mind + miss + mom + money + music + need + old + onedirection + person + photographer + play + professional + put + re + right + say + shit + song + sports + stop + student + stuff + take + team + thank + things + think + today + travel + try + tv + tweet + twitter + ve + views + wanna + want + wife + wish + working + youtube   ,  family=binomial(link = "logit"), data = clean_twitter.75)
+#fit.elastic.50 <- glm(Yhat ~  has_mention + days_active + favorites_per_day + retweets_per_day + description_nchars + text_nchars + name_nchars + link_color_name + sidebar_color_name + amazing + amp + back + bad + beautiful + believe + big + black + blogger + books + care + coffee + dad + day + days + digital + director + editor + fan + father + favorite + find + food + football + free + friend + friends + fuck + fucking + game + games + girl + girls + guy + hair + happy + having + health + heart + help + hi + home + https + husband + im + just + keep + life + like + little + living + lol + love + lover + makes + man + media + mind + miss + mom + money + music + need + night + old + onedirection + person + photographer + play + pretty + put + re + right + shit + song + sports + stay + student + stuff + take + team + thank + things + think + today + travel + try + tv + tweet + twitter + ve + views + wanna + want + went + wife + wish + working + year + youtube  ,  family=binomial(link = "logit"), data = clean_twitter.50)
+fit.elastic.75.summary <- fit.elastic.75 %>% summary
+fit.elastic.50.summary <- fit.elastic.50 %>% summary
+clean_twitter.75$p_elastic <- predict(fit.elastic.75, type = "response")
+clean_twitter.50$p_elastic <- predict(fit.elastic.50, type = "response")
+ROC.elastic.75 <- roc(Yhat ~ p_elastic, data = clean_twitter.75) # 0.7654
+ROC.elastic.50 <- roc(Yhat ~ p_elastic, data = clean_twitter.50) # 0.7704
+```
+
+```{r, fig.align='center', fig.width=10 , echo=F }
+elasticROC <- plot(ROC.elastic.75, print.auc = TRUE, col = "blue" , print.auc.y = .4)
+elasticROC <- plot(ROC.elastic.50, print.auc = TRUE, col = "green" , print.auc.y = .7 , add = TRUE)
+```
+
+```{r, results='hide', echo=F}
+perc.f.75 <- function(i){sum(as.numeric(as.numeric(clean_twitter.75$p_elastic > i ) == clean_twitter.75$Yhat) )/nrow(clean_twitter.75)}
+perc.f.50 <- function(i){sum(as.numeric(as.numeric(clean_twitter.50$p_elastic > i ) == clean_twitter.50$Yhat) )/nrow(clean_twitter.50)}
+pY.75 <- lapply.uvec(((1:1000)/1000),perc.f.75) 
+pY.50 <- lapply.uvec(((1:1000)/1000),perc.f.50) 
+results.elasticlogit <- data.frame(X=c(((1:1000)/1000)),p.75=pY.75,p.50=pY.50)
+results.elasticlogit.plot <- ggplot(results.elasticlogit , aes(X)) +
+  geom_line(aes(y = p.75, colour = "p.75")) +
+  geom_line(aes(y = p.50, colour = "p.50")) +
+  ggtitle("Elastic Net Logit") + ylab("Accuracy Rate at p=X decision boundary")
+
+?model.matrix
+```
+
+Although the logistic regression using the dataset with daily tweets capped at 50 technically yields a higher AUC value, the output above suggests that there is no substantial difference between using the two datasets.  
+
+With regards to the threshold value for classification, the gender context of this study is such that only a 50% threshold values makes sense. In other words, it makes no sense to more heavily penalize misclassification as male over misclassification as female (or vice versa).
+
+## Model 2: Random Forest - All Variables
+
+After tuning the algorithm parameters, we random forest models were then built using 1,000 trees and an mtry value of 22. Again, both subsets of data with daily tweets capped at 50 and 100 were considered. As exhibited in the ROC comparison below, the model using data with daily tweets capped at 50 once again produced a slightly higher AUC but the outputs are ultimately identical for practical purposes. It is, however, worth noting that that the random forest approach yielded a slightly better performance compared to the logistic model approach in both data subsets as seen in the higher AUC values. Similar to the case of the logistic model, the performance of the random forest models peaks at around a classification threshold value of 50%. 
+
+```{r, results='hide', echo=F}
+#tuning50 <- tuneRF(x=clean_twitter.50[,-c(191:194)],y=clean_twitter.50$Yhat,mtryStart = 10, ntreeTry = 1000, stepFactor = 1.5, improve = 0.001, trace = TRUE, plot = TRUE, doBest = FALSE )
+tuning50.df <- tuning50 %>% as.data.frame
+tuning50.df.plot <- tuning50.df %>% ggplot(aes(x=mtry , y= OOBError )) + geom_point() + geom_abline(slope = 0, intercept = 0, col = "red") + stat_smooth(method = "loess", col = "blue") + ggtitle("Tuning Results: Estimated OOB Error versus Mtry")
+```
+
+```{r, fig.align='center', fig.width=10 , echo=F }
+tuning50.df.plot
+```
+
+
+```{r, results='hide', echo=F}
+#set.seed(350)
+
+#fit.rf.75.all <- randomForest(Yhat~., clean_twitter.75, mtry=22, ntree=1000) 
+#fit.rf.50.all <- randomForest(Yhat~., clean_twitter.50, mtry=22, ntree=1000) 
+
+ROC.rf.75 <- roc(Yhat ~ fit.rf.75.all$predicted, data = clean_twitter.75) # 0.7717
+ROC.rf.50 <- roc(Yhat ~ fit.rf.50.all$predicted, data = clean_twitter.50) # 0.7734
+
+```
+
+```{r, fig.align='center', fig.width=10 , echo=F }
+rf1ROC <- plot(ROC.rf.75, print.auc = TRUE, col = "red" , print.auc.y = .4 )
+rf1ROC <- plot(ROC.rf.50, print.auc = TRUE, col = "green" , print.auc.y = .7 , add = TRUE)
+```
+
+```{r, results='hide', echo=F}
+clean_twitter.75$p_rftest <- fit.rf.75.all$predicted
+clean_twitter.50$p_rftest <- fit.rf.50.all$predicted
+perc.rftest100<- function(i){sum(as.numeric(as.numeric(clean_twitter.75$p_rftest > i ) == clean_twitter.75$Yhat) )/nrow(clean_twitter.75)}
+perc.rftest50<- function(i){sum(as.numeric(as.numeric(clean_twitter.50$p_rftest > i ) == clean_twitter.50$Yhat) )/nrow(clean_twitter.50)}
+p.rftest100 <- lapply.uvec(((1:1000)/1000),perc.rftest100) 
+p.rftest50 <- lapply.uvec(((1:1000)/1000),perc.rftest50) 
+results.RF <- data.frame(X=c(((1:1000)/1000)),p.100=p.rftest100,p.50=p.rftest50)
+results.RF.plot <- ggplot(results.RF , aes(X)) +
+  geom_line(aes(y = p.100, colour = "p.100")) +
+  geom_line(aes(y = p.50, colour = "p.50")) + 
+  ggtitle("Random Forest") + ylab("Accuracy Rate at p=X decision boundary")
+max(p.rftest100) #0.7058376
+max(p.rftest50) #0.7078251
+```
+
+\pagebreak
+
+## Model 3: Random Forest - Elastic Net Variables
+
+Finally we ran another Random Forest using only the Elastic Net variables to compare performance. This model was the worse performer, suggesting that important variables were ignored.
+
+```{r, results='hide', echo=F}
+#set.seed(351)
+#fit.rf.75.elastic <- randomForest(Yhat~ has_mention + days_active + favorites_per_day + retweets_per_day + description_nchars + text_nchars + name_nchars + link_color_name + sidebar_color_name + amazing + amp + ass + back + beautiful + big + blogger + books + business + coffee + com + dad + day + days + director + editor + fan + father + favorite + find + food + football + free + friend + friends + fuck + fucking + game + games + girl + girls + give + gmail + guy + hair + happy + hard + having + health + heart + help + home + https + husband + im + just + keep + life + like + little + living + lol + love + lover + makes + making + man + man + media + mind + miss + mom + money + music + need + old + onedirection + person + photographer + play + professional + put + re + right + say + shit + song + sports + stop + student + stuff + take + team + thank + things + think + today + travel + try + tv + tweet + twitter + ve + views + wanna + want + wife + wish + working + youtube , clean_twitter.75, mtry=22, ntree=1000) 
+
+#fit.rf.50.elastic <- randomForest(Yhat~ has_mention + days_active + favorites_per_day + retweets_per_day + description_nchars + text_nchars + name_nchars + link_color_name + sidebar_color_name + amazing + amp + back + bad + beautiful + believe + big + black + blogger + books + care + coffee + dad + day + days + digital + director + editor + fan + father + favorite + find + food + football + free + friend + friends + fuck + fucking + game + games + girl + girls + guy + hair + happy + having + health + heart + help + hi + home + https + husband + im + just + keep + life + like + little + living + lol + love + lover + makes + man + media + mind + miss + mom + money + music + need + night + old + onedirection + person + photographer + play + pretty + put + re + right + shit + song + sports + stay + student + stuff + take + team + thank + things + think + today + travel + try + tv + tweet + twitter + ve + views + wanna + want + went + wife + wish + working + year + youtube  , clean_twitter.50, mtry=22, ntree=1000) 
+
+ROC.rf.75.elastic <- roc(Yhat ~ fit.rf.75.elastic$predicted, data = clean_twitter.75) # 0.7717
+ROC.rf.50.elastic <- roc(Yhat ~ fit.rf.50.elastic$predicted, data = clean_twitter.50) # 0.7734
+
+clean_twitter.75$p_rfelastic <- fit.rf.75.elastic$predicted
+clean_twitter.50$p_rfelastic <- fit.rf.50.elastic$predicted
+
+
+perc.rfelastic75<- function(i){sum(as.numeric( as.numeric(clean_twitter.75$p_rfelastic > i ) == clean_twitter.75$Yhat) )/nrow(clean_twitter.75)}
+perc.rfelastic50<- function(i){sum(as.numeric(as.numeric(clean_twitter.50$p_rfelastic > i ) == clean_twitter.50$Yhat) )/nrow(clean_twitter.50)}
+
+p.rfelastic75 <- lapply.uvec(((1:1000)/1000),perc.rfelastic75) 
+p.rfelastic50 <- lapply.uvec(((1:1000)/1000),perc.rfelastic50) 
+
+results.RFelastic <- data.frame(X=c(((1:1000)/1000)),p.75=p.rfelastic75,p.50=p.rfelastic50)
+
+which( results.RFelastic$p.75 ==   max(results.RFelastic$p.75)   ) # 0.6979019 0.493
+which( results.RFelastic$p.50  ==   max(results.RFelastic$p.50)    ) # 0.7032221 0.489
+
+results.RFelastic.plot <- ggplot(results.RFelastic , aes(X)) +
+  geom_line(aes(y = p.75, colour = "p.75")) +
+  geom_line(aes(y = p.50, colour = "p.50"))  + 
+  ggtitle("Random Forest - Elastic Net") + ylab("Accuracy Rate at p=X decision boundary")
+max(p.rfelastic75) #0.6868138
+max(p.rfelastic50) #0.6896433
+```
+
+```{r, fig.align='center', fig.width=10 , echo=F }
+rfelasticROC <- plot(ROC.rf.75.elastic, print.auc = TRUE, col = "red" , print.auc.y = .4 )
+rfelasticROC <- plot(ROC.rf.50.elastic, print.auc = TRUE, col = "green" , print.auc.y = .7 , add = TRUE)
+```
+
+
+
+## Concluding Remarks
+
+The results of our study not only provide strong support for our initial view on the presence of language use differences between genders on Twitter but also corroborate the conclusions of existing studies that link gender and social media activity. The predictive accuracy of our models peaks at approximately 70%; although certainly less than ideal, we believe that this figure is acceptable given that the study??s analysis was based on a single random tweet message per user profile. In future research endeavors that follow the statistical modeling processes outlined in this study, we believe that the predictive performance of the models can be significantly improved by compiling and using a greater number of tweet messages per user profile, giving the constructed models more data to work with.
+
+
+\pagebreak
+
+# Bibliography
+
+[1] Schwartz HA, Eichstaedt JC, Kern ML, Dziurzynski L, Ramones SM, Agrawal M, et al. (2013) Personality, Gender, and Age in the Language of Social Media: The Open-Vocabulary Approach. PLoS ONE 8(9): e73791. https://doi.org/10.1371/journal.pone.0073791
+
+[2] Coviello L, Sohn Y, Kramer ADI, Marlow C, Franceschetti M, Christakis NA, et al. (2014) Detecting Emotional Contagion in Massive Social Networks. PLoS ONE 9(3): e90315. https://doi.org/10.1371/journal.pone.0090315
+
+[3] M. Kosinski, D. Stillwell, and T. Graepel, ??Private Traits and Attributes are Predictable From Digital Records of Human Behavior,?? in Proceedings of the national Academy of Sciences of the United States of America, 2012. [Online]. Available: http://www.pnas.org/content/110/15/5802.short.
+
+[4] Kaggle, https://www.kaggle.com/crowdflower/twitter-user-gender-classification
+
+# Appendix
+## Other Model Results
+
+```{r, fig.align='center', fig.width=10 , fig.height=6 , echo=F }
+grid.arrange(results.elasticlogit.plot,results.RFelastic.plot, ncol=2)
+```
+
+## Python Code (See Rmd file)
+
+```{python, eval=F, echo=F,results='hide'}
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+import re
+import textmining as txt
+from operator import itemgetter
+from PIL import Image
+import webcolors
+# Using vectorizer from kaggle
+# function for transforming documents into counts
+from sklearn.feature_extraction.text import CountVectorizer
+
+### Step 1 - Data Preview and Cleaning ###
+
+# read data
+df = pd.read_csv('twitter.csv', encoding='latin1')
+df.describe()
+
+# get dimensions and columns
+(nrows,ncols) = df.shape
+cols = set(df.columns)
+
+"""
+Index(['_unit_id', '_golden', '_unit_state', '_trusted_judgments',
+       '_last_judgment_at', 'gender', 'gender:confidence', 'profile_yn',
+       'profile_yn:confidence', 'created', 'description', 'fav_number',
+       'gender_gold', 'link_color', 'name', 'profile_yn_gold', 'profileimage',
+       'retweet_count', 'sidebar_color', 'text', 'tweet_coord', 'tweet_count',
+       'tweet_created', 'tweet_id', 'tweet_location', 'user_timezone'],
+      dtype='object')
+"""
+# get data types of columns
+df.dtypes 
+"""
+_unit_id                   int64
+_golden                     bool
+_unit_state               object
+_trusted_judgments         int64
+_last_judgment_at         object
+gender                    object
+gender:confidence        float64
+profile_yn                object
+profile_yn:confidence    float64
+created                   object
+description               object
+fav_number                 int64
+gender_gold               object
+link_color                object
+name                      object
+profile_yn_gold           object
+profileimage              object
+retweet_count              int64
+sidebar_color             object
+text                      object
+tweet_coord               object
+tweet_count                int64
+tweet_created             object
+tweet_id                 float64
+tweet_location            object
+user_timezone             object
+
+need to change _unit_id to categorical, gender to categorical, 
+created to date, and tweet_created to date
+"""
+# convert data types
+for col in ['_unit_id','gender','link_color','sidebar_color']:
+    df[col] = df[col].astype('category')
+
+def toDate(s):
+    return s.split()[0]
+
+for col in ['created','tweet_created']:
+    df[col] = pd.to_datetime(df[col].apply(toDate),format = '%m/%d/%Y')
+
+# get unique values for gender columns and their counts and remove nan's
+df.apply(pd.isnull).sum()
+df = df[pd.notnull(df.gender)]
+df.description = df.description.fillna("")
+
+df.gender.value_counts(dropna=False)
+
+# remove rows with unknown and brand for gender
+df = df[df.gender != 'unknown']
+df = df[df.gender != 'brand']
+df.gender = df.gender.cat.remove_unused_categories()
+
+# normalize text of tweets and descriptions 
+def normalize_text(s):
+    s = str(s)
+    s = s.lower()    
+    s = re.sub('\s\W',' ',s)
+    s = re.sub('\W\s',' ',s)
+    s = re.sub('\s+',' ',s)   
+    return s
+
+    
+df.text = df.text.apply(normalize_text)
+df.description = df.description.apply(normalize_text)
+    
+# proportion of observations with gender confidence < 1
+conf = df.loc[:,'gender:confidence'] >= 1
+(nrows,_) = df.shape
+sum(conf)/nrows 
+df = df[df['gender:confidence'] >= 1]
+
+
+# remove columns and rows which we will not use
+toKeep = cols - set(['_golden', '_unit_state', '_trusted_judgments', '_last_judgment_at', 'profile_yn', 'profile_yn:confidence','gender_gold','profile_yn_gold', 'profileimage','tweet_coord','user_timezone','tweet_location','gender:confidence'])
+
+# remove columns 
+clean = df[list(toKeep)]
+
+# check for duplicated users
+sum(clean.duplicated('_unit_id'))
+
+# summary of missing values
+len(clean.index)-clean.count()
+
+# show preview
+clean.head()
+(nrows,ncols) = clean.shape
+
+
+
+### Step 2 - Feature Creation ###
+
+"""
+From the cleaned data set, there are many features that we can create.
+
+1. has_mention --> When tweeting, a person has the option
+of tagging another user in the tweet. This is done by writing '@' and 
+the other user's twitter name without any spaces. A twitter name can be a 
+maximum of 15 characters so we will look for ocurrences of '@' followed by
+a max of 15 characters. To avoid counting ocurrences that fulfill these requirements 
+but are not mentions, we note that twitter handles only allow alphanumeric characters
+and underscores. More info at: https://support.twitter.com/articles/101299.
+
+test = re.compile(r'(^|[^@\w])@(\w{1,15})\b', re.IGNORECASE)
+sample = r'@giannaaa28 lmao _Ù÷â_Ù÷â dude Im hella scared for next episode bc the ending to yesterdays'
+re.findall(test,sample)
+
+2. days_active --> days since the account was created until the tweet was created
+
+3. tweets_per_day --> how many tweets the user has written from the moment the account was 
+created to when the tweet was collected
+
+4. likely_fake --> binary variable indicating whether or not the account could be a bot
+based on the ridiculous number of tweets per day
+
+5. description_nchars --> indicates the number of characters in the user's description
+
+6. text_nchars --> indicates the number of characters in the tweet
+
+7. name_nchars --> indicates the number of characters in the user's name
+
+8.has_hashtags --> indictes the number of hashtags in the tweet
+
+"""
+
+# has_mentions (binary indicating if tweet has a mention or not)
+
+def countMentions(s):  
+        mention = re.compile(r'(^|[^@\w])@(\w{1,15})\b', re.IGNORECASE)
+        found = mention.findall(s)
+        return (len(found) >= 1)*1
+ 
+clean['has_mention']  = clean.loc[:,'text'].apply(countMentions)
+
+# days_active
+
+clean['days_active'] = ((clean.tweet_created - clean.created) / np.timedelta64(1, 'D'))+1
+
+#clean.groupby('gender').days_active.plot(kind='bar')
+
+# tweets_per_day 
+
+clean['tweets_per_day'] = clean['tweet_count'] / clean['days_active']
+
+# favorites per day
+
+clean['favorites_per_day'] = clean['fav_number'] / clean['days_active']
+
+# retweets per day 
+
+clean['retweets_per_day'] = clean['retweet_count'] / clean['days_active']
+
+# remove observations with more than 75 tweets per day and more than 200 favorite per day
+
+clean = clean.loc[clean['tweets_per_day'] <=75,:]
+clean = clean.loc[clean['favorites_per_day'] <= 200,:]
+# re index series
+clean = clean.reset_index(drop=True)
+
+# decripton nchars (count whitespace??)
+
+clean['description_nchars'] = clean.description.apply(len)
+    
+
+# text nchars
+
+clean['text_nchars'] = clean.text.apply(len)
+
+
+# name nchars
+
+clean['name_nchars'] = clean.name.apply(len)
+
+# has_hashtag
+
+def countHashTags(s):  
+        mention = re.compile(r'^#(\w{1,15})\b', re.IGNORECASE)
+        found = mention.findall(s)
+        return (len(found) >= 1)*1
+
+clean['has_hashtag']  = clean.text.apply(countHashTags)
+
+clean = clean.reset_index(drop=True)
+
+
+# link_color_name  and sidebar_color_name
+# (import webcolors (http://webcolors.readthedocs.io/en/1.7/install.html))
+# Have to get closest color, not exact one, got these functions from the internet - http://stackoverflow.com/questions/9694165/convert-rgb-color-to-english-color-name-like-green. colors are in html4 format which only support 16 colors
+# conversion is to the most smilar color, not the exact one. 
+
+def closest_colour(requested_colour):
+    min_colours = {}
+    new = webcolors.hex_to_rgb(requested_colour)
+    for key, name in webcolors.html4_hex_to_names.items():
+        r_c, g_c, b_c = webcolors.hex_to_rgb(key)
+        rd = (r_c - new[0]) ** 2
+        gd = (g_c - new[1]) ** 2
+        bd = (b_c - new[2]) ** 2
+        min_colours[(rd + gd + bd)] = name
+    return min_colours[min(min_colours.keys())]
+
+def get_colour_name(requested_colour):
+    new = webcolors.hex_to_rgb(requested_colour)
+    try:
+        closest_name = webcolors.rgb_to_name(new,spec='html4')
+    except ValueError:
+        closest_name = closest_colour(requested_colour)
+    return closest_name
+
+def convert(hex):
+    if len(hex) == 6:
+        return get_colour_name('#'+hex)
+    else:
+        return 'No color specified'
+
+clean['link_color_name'] = clean.link_color.apply(convert)
+clean['link_color_name'] = clean['link_color_name'].astype('category')
+clean.link_color_name.value_counts(dropna=False)
+
+clean['sidebar_color_name'] = clean.sidebar_color.apply(convert)
+clean['sidebar_color_name'] = clean['sidebar_color_name'].astype('category')
+clean.sidebar_color_name.value_counts(dropna=False)
+
+
+
+### Step 3 - Exploring and Visualizing the Data ###
+
+# plot proportions of males and females
+
+plt.figure();
+ax = clean.gender.value_counts().plot(kind='pie')
+ax.set_xlabel('test')
+plt.show()
+
+
+# Plot tweets per day by gender
+# omitting values greater than 150
+omit = clean.loc[clean['tweets_per_day']>=80,'tweets_per_day']
+len(omit) # 315 observations
+
+fig = plt.figure()
+gs=GridSpec(2,2)
+
+xm = clean.loc[clean['gender']=='male','tweets_per_day']
+xf = clean.loc[clean['gender']=='female','tweets_per_day']
+bins = np.linspace(0,100,25)
+
+ax = fig.add_subplot(gs[0,:])
+ax2 = fig.add_subplot(gs[1,0])
+ax3 = fig.add_subplot(gs[1,1])
+
+ax.hist(xm,bins,alpha=0.6,color='c')
+ax.hist(xf,bins,alpha=0.6,color='g')
+ax.tick_params(labelsize=20,pad=20)
+ax.set_xticks(list(range(0,100,10)))
+ax.set_xlim([0,100])
+ax.legend(loc='upper right',labels=['Males','Females'],fontsize=30)
+t = ax.set_title('Tweets per day by gender',fontsize=30)
+t.set_y(1.05)
+
+ax2.hist(xm,bins,color='c')
+ax2.tick_params(labelsize=15,pad=20)
+ax2.set_xticks(list(range(0,100,10)))
+ax2.set_xlim([0,100])
+t2 = ax2.set_title('Tweets per day - males',fontsize=20)
+t2.set_y(1.05)
+
+ax3.hist(xf,bins,color='g')
+ax3.tick_params(labelsize=15,pad=20)
+ax3.set_xticks(list(range(0,100,10)))
+ax3.set_xlim([0,100])
+ax3.set_ylim([0,1800])
+t3 = ax3.set_title('Tweets per day - females',fontsize=20)
+t3.set_y(1.05)
+
+fig.tight_layout()
+fig.show()
+
+
+
+"""
+To-do: 
+    - Create same plots but for females and males separately
+    - Create the same plots for description separately
+    - Input word term frequences into data frame
+"""
+
+# remove stopwords from tweets and descriptions
+# for testing, I joined the descriptions and tweets into one string
+d = np.array([clean._unit_id,clean.text,clean.description,clean.gender]).T
+words = pd.DataFrame(d, columns=['_unit_id','text','description','gender'])
+words['clean_text'] = words.text + words.description
+words['clean_text'] = words.clean_text.apply(txt.simple_tokenize_remove_stopwords)
+
+
+
+
+# create separate data frames for males and females
+df_males = words.loc[words['gender']=='male',:]
+df_males = df_males.reset_index(drop=True)
+df_females = words.loc[words['gender']=='female',:]
+df_females = df_females.reset_index(drop=True)
+
+# get list of all the words 
+allwordstweets = []
+(nrows,_) = words.shape
+for i in range(nrows):
+    allwordstweets += words.loc[i,'clean_text']
+
+allwordstweets = [word for word in allwordstweets if 'Ù' not in word]
+allwordstweets = [word for word in allwordstweets if 'http' not in word]
+allwordstweets = [word for word in allwordstweets if 'â' not in word]
+
+# remove duplicated words
+allwordstweets2 = list(set(allwordstweets))
+len(allwordstweets2) # 36927 repeated words (not including stopwords)
+
+# create list tuple with words repeated 100 times or more
+toReturn = []
+for word in allwordstweets2:
+    count = allwordstweets.count(word)
+    if  count >= 100:
+        toReturn.append((word, count))
+    else:
+        pass
+
+# sort the words by their counts (descending order)
+sortedbycount = sorted(toReturn,key=itemgetter(1),reverse=True)
+sortedbycount
+# get words and their counts separately
+x = [x for (x,y) in sortedbycount[0:25]]
+y = [y for (x,y) in sortedbycount[0:25]]
+
+### same process but separated by gender ###
+
+allwordstweets_males = []
+(nrows_m,_) = df_males.shape
+for i in range(nrows_m):
+    allwordstweets_males += df_males.loc[i,'clean_text']
+
+allwordstweets_males = [word for word in allwordstweets_males if 'Ù' not in word]
+allwordstweets_males = [word for word in allwordstweets_males if 'http' not in word]
+allwordstweets_males = [word for word in allwordstweets_males if 'â' not in word]
+
+# remove duplicated words
+allwordstweets_males2 = list(set(allwordstweets_males))
+len(allwordstweets_males2) # 
+# create list tuple with words repeated 100 times or more
+toReturn_males = []
+for word in allwordstweets_males2:
+    count = allwordstweets_males.count(word)
+    if  count >= 50:
+        toReturn_males.append((word, count))
+    else:
+        pass
+
+# sort the words by their counts (descending order)
+sortedbycount_males = sorted(toReturn_males,key=itemgetter(1),reverse=True)
+sortedbycount_males
+
+# get words and their counts separately
+x_m = [x for (x,y) in sortedbycount_males[0:25]]
+y_m = [y for (x,y) in sortedbycount_males[0:25]]
+
+
+
+# females
+ 
+### same process but separated by gender ###
+
+allwordstweets_females = []
+(nrows_f,_) = df_females.shape
+for i in range(nrows_f):
+    allwordstweets_females += df_females.loc[i,'clean_text']
+
+allwordstweets_females = [word for word in allwordstweets_females if 'Ù' not in word]
+allwordstweets_females = [word for word in allwordstweets_females if 'http' not in word]
+allwordstweets_females = [word for word in allwordstweets_females if 'â' not in word]
+
+# remove duplicated words
+allwordstweets_females2 = list(set(allwordstweets_females))
+len(allwordstweets_females2) # 
+# create list tuple with words repeated 50 times or more
+toReturn_females = []
+for word in allwordstweets_females2:
+    count = allwordstweets_females.count(word)
+    if  count >= 50:
+        toReturn_females.append((word, count))
+    else:
+        pass
+
+# sort the words by their counts (descending order)
+sortedbycount_females = sorted(toReturn_females,key=itemgetter(1),reverse=True)
+sortedbycount_females
+
+# get words and their counts separately
+x_f = [x for (x,y) in sortedbycount_females[0:25]]
+y_f = [y for (x,y) in sortedbycount_females[0:25]]
+
+       
+### Step 4 - Extracting clean dataset ###
+# 
+       
+words['clean_text'] = words.clean_text.apply(' '.join)
+vectorizer = CountVectorizer()
+x = vectorizer.fit_transform(words['clean_text'])
+
+new = pd.DataFrame(x.A, columns=vectorizer.get_feature_names())
+x2 = new.loc[:,(new.sum() >= 100)]
+
+pd.concat([words,x2])
+
+t = pd.merge(clean,x2,right_index=True,left_index=True)
+
+t.drop(t.columns[[0,1,2,3,4,5,7,8,9,10,11,12]],axis=1,inplace=True)
+t.to_csv('vectorizerdata.csv')
+```
+
+
